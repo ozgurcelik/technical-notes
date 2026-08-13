@@ -1,0 +1,17 @@
+title: "Özgür Çelik — Technical Notes"
+description: "Notes on distributed training, GPU programming, and machine learning systems."
+author: "Özgür Çelik"
+
+url: "https://ozgurcelik.github.io"
+baseurl: "/technical-notes"
+
+theme: minima
+show_excerpts: true
+timezone: Europe/Zurich
+
+plugins:
+  - jekyll-feed
+
+markdown: kramdown
+kramdown:
+  input: GFM
