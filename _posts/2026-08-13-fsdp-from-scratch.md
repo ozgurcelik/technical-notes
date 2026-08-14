@@ -11,7 +11,7 @@ permalink: /fsdp-from-scratch/
 
 The purpose of this project is to learn how FSDP works and implement it from scratch.
 
-The complete companion implementation is available in [`parallelism/fsdp.py`](https://github.com/ozgurcelik/engineering/blob/12af7991edf3fa2afeee2b9cbb23747bba153d16/parallelism/fsdp.py).
+The complete companion implementation is available in [`code/fsdp.py`](https://github.com/ozgurcelik/technical-notes/blob/main/code/fsdp.py).
 
 ## Why FSDP?
 
