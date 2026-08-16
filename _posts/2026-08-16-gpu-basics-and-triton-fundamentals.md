@@ -1,7 +1,7 @@
 ---
 layout: post
 title: "GPU Basics and Triton Fundamentals"
-date: 2026-08-16 12:00:00 +0200
+date: 2026-08-16 00:00:00 +0200
 description: "A practical introduction to GPU execution, performance fundamentals, and Triton vector-addition kernels."
 excerpt: "A practical introduction to GPU execution, performance fundamentals, and Triton vector-addition kernels."
 categories: [gpu-programming, triton]
