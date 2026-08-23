@@ -19,9 +19,10 @@ The complete implementation and benchmark harness are available in [`code/matrix
 ## Naive Implementation
 
 The C[i,j] element is computed as:
-```
-C[i,j] = sum_{k=0}^{K-1} A[i,k] * B[k,j]
-```
+
+$$
+C[i,j] = \sum_{k=0}^{K-1} A[i,k] \cdot B[k,j]
+$$
 
 The naive implementation is to compute each element of the C separately in a different program.
 
