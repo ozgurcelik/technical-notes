@@ -68,6 +68,28 @@ block. Independent blocks generally communicate through global memory and
 cannot assume a scheduling order. Thread-block clusters provide an advanced
 exception on supported GPUs by allowing access to distributed shared memory.
 
+### Threads vs. CUDA Cores vs. Tensor Cores
+
+These terms describe different things:
+
+- A **thread** is a logical instance of a kernel. It has its own thread ID and
+  register state, and threads are scheduled in 32-thread warps. It is not a
+  physical core.
+- A **CUDA core** is a physical arithmetic execution unit used for ordinary
+  scalar operations such as FP32 arithmetic. Threads are not permanently tied
+  to CUDA cores; an SM issues instructions from ready warps to its execution
+  units.
+- A **Tensor Core** is a specialized physical execution unit for small matrix
+  multiply-accumulate operations. Operations such as a suitable `tl.dot` can
+  use Tensor Cores, depending on the data types, tile shapes, and compiler.
+
+For example, an NVIDIA L4 has 58 SMs, 7,424 CUDA cores, and 232 Tensor Cores.
+Each SM can keep up to 48 warps, or 1,536 threads, resident, for a theoretical
+GPU-wide maximum of 89,088 resident threads. A kernel can launch far more
+threads than this; blocks that do not currently fit wait and run in later
+waves. The actual number resident may be lower because registers and shared
+memory are limited.
+
 ## Roofline Model
 
 There are two regimes of performance:
