@@ -12,9 +12,9 @@ permalink: /flash-attention-2-forward-pass-in-triton/
 
 ## Scope and key idea
 
-This note derives and implements the forward pass of FlashAttention-2 in Triton. The implementation supports multi-head self-attention (MHA), with one Triton program processing one query tile. It supports non-causal attention and aligned causal self-attention, but not GQA, MQA, cached decoding, or the backward pass.
+This note derives and implements the forward pass of FlashAttention-2 in Triton. We start with multi-head attention (MHA), with one Triton program processing one query tile for one head, and then extend the staged kernel to grouped-query attention (GQA) and multi-query attention (MQA). The implementations support non-causal attention and aligned causal self-attention; cached decoding and the backward pass are outside this note's scope.
 
-The complete implementation and benchmark harness are available in [`code/flash_attention.py`](https://github.com/ozgurcelik/technical-notes/blob/main/code/flash_attention.py).
+The complete implementation is available in [`code/flash_attention.py`](https://github.com/ozgurcelik/technical-notes/blob/main/code/flash_attention.py).
 
 At its core, self-attention is
 
@@ -23,7 +23,7 @@ $$
 = \operatorname{softmax}\left(\frac{QK^T}{\sqrt{d}}\right)V.
 $$
 
-For the kernel, the tensors have shape
+For the initial MHA kernel, the tensors have shape
 
 $$
 Q,K,V\in\mathbb{R}^{B\times H\times L\times d},
@@ -66,14 +66,6 @@ The softmax operation reads that matrix and writes the full probability matrix, 
 The two $L \times L$ intermediate matrices create substantial HBM traffic, and FlashAttention aims to avoid materializing them there.
 
 The arithmetic is not the main problem. The problem is that this implementation materializes both $S$ and $P$, each containing $L^2$ elements, and transfers them through HBM between separate kernel operations. This raises the question that motivates FlashAttention: can we compute $O=PV$ without storing the complete $S$ or $P$ matrices?
-
-### Baseline benchmark
-
-When we compare the non-causal naive attention implementation with PyTorch SDPA using `batch_size=4`, `num_heads=8`, `head_dim=128`, and `dtype=torch.float16` on an L4 GPU, we get the following results:
-
-![Naive attention implementation vs PyTorch SDPA]({{ "/assets/triton/flash_attention_naive_vs_pytorch.png" | relative_url }})
-
-PyTorch's `scaled_dot_product_attention` is a dispatcher and may select an optimized fused CUDA backend, so it is an optimized comparison rather than a naive reference implementation. For reproducible benchmark results, the PyTorch, Triton, CUDA, and GPU versions should be recorded alongside the measurements.
 
 ## Tiling attention
 
@@ -534,7 +526,7 @@ The staged kernel visits the same score tiles as the Tk-trick kernel. It separat
 
 ### Benchmark results
 
-Looking at the benchmark results for causal attention:
+Looking at the benchmark results for the causal MHA kernels:
 
 ![Flash Attention Forward Pass Causal]({{ "/assets/triton/flash_attention_forward_causal.png" | relative_url }})
 
@@ -542,7 +534,9 @@ We see that the staged kernel performs very similarly to PyTorch SDPA in this be
 At small sequence lengths, fixed kernel-launch and scheduling overheads dominate, and there is relatively little work for the causal optimizations to skip.
 As the sequence length increases, the amount of avoided work grows and the performance gains become visible.
 
-## Appendix: MHA, GQA, and MQA shapes
+## Extending the kernel to GQA and MQA
+
+So far, each query head has used its own key and value head. Now let's look at what changes when several query heads share a key-value head. The staged tile loop and online-softmax updates stay the same; the main change is which head each block pointer addresses.
 
 ### Attention variants
 
@@ -574,7 +568,80 @@ Since each key-value head requires its own entries in the KV cache, the size of 
 During autoregressive decoding, repeatedly reading the existing KV cache from HBM can be a substantial memory-bandwidth cost; appending the new key and value entries is typically a smaller part of that cost.
 MQA therefore reduces both the KV-cache footprint and the amount of memory traffic, which can improve decoding throughput compared with MHA.
 
-### Projection and tensor shapes
+### Mapping query heads to key-value heads
+
+Let $H_q$ be the number of query heads and $H_{kv}$ the number of key-value heads. In the code, these are `Hq` and `Hk`; `Hk` counts both key and value heads. For the self-attention case discussed here, the shapes become
+
+$$
+Q,O\in\mathbb{R}^{B\times H_q\times L\times d},
+\qquad K,V\in\mathbb{R}^{B\times H_{kv}\times L\times d}.
+$$
+
+We assume positive head counts, $H_q$ divisible by $H_{kv}$, and contiguous groups of query heads. Each key-value head is shared by $g=H_q/H_{kv}$ query heads. In `flash_attention_forward_gqa_kernel`, we select the head with
+
+```python
+query_tile_index = tl.program_id(0)
+head_q_index = tl.program_id(1) % Hq
+batch_index = tl.program_id(1) // Hq
+
+head_kv_index = head_q_index // (Hq // Hk)
+```
+
+For example, with eight query heads and two key-value heads, the group size is four:
+
+| Query head | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
+|---|---|---|---|---|---|---|---|---|
+| Key-value head | 0 | 0 | 0 | 0 | 1 | 1 | 1 | 1 |
+
+The same expression covers all three variants:
+
+- **MHA:** `Hk == Hq`, so `head_kv_index == head_q_index`.
+- **GQA:** `1 < Hk < Hq`, so each group of query heads shares a key-value head.
+- **MQA:** `Hk == 1`, so every query head maps to key-value head zero.
+
+The launch grid still uses `B * Hq` as its second dimension. Sharing $K$ and $V$ does not merge the query heads: each program computes its own scores, softmax state, and output for its query head.
+
+### Updating the block pointers
+
+The query, output, and log-sum-exp pointers still use `head_q_index`. Only the key and value pointers use `head_kv_index`:
+
+| Pointer | Base address for this batch and head |
+|---|---|
+| `Q_block_ptr` | `Q_ptr + batch_index * stride_qb + head_q_index * stride_qh` |
+| `K_block_ptr` | `K_ptr + batch_index * stride_kb + head_kv_index * stride_kh` |
+| `V_block_ptr` | `V_ptr + batch_index * stride_vb + head_kv_index * stride_vh` |
+| `O_block_ptr` | `O_ptr + batch_index * stride_ob + head_q_index * stride_oh` |
+| `L_block_ptr` | `L_ptr + batch_index * stride_lb + head_q_index * stride_lh` |
+
+For example, the key and value block pointers are
+
+```python
+K_block_ptr = tl.make_block_ptr(
+    K_ptr + batch_index * stride_kb + head_kv_index * stride_kh,
+    shape=(N_KEYS, D),
+    strides=(stride_kk, stride_kd),
+    offsets=(0, 0),
+    block_shape=(K_TILE_SIZE, triton.next_power_of_2(D)),
+    order=(1, 0),
+)
+
+V_block_ptr = tl.make_block_ptr(
+    V_ptr + batch_index * stride_vb + head_kv_index * stride_vh,
+    shape=(N_KEYS, D),
+    strides=(stride_vk, stride_vd),
+    offsets=(0, 0),
+    block_shape=(K_TILE_SIZE, triton.next_power_of_2(D)),
+    order=(1, 0),
+)
+```
+
+The shapes, strides within each head, tile offsets, and pointer advances are otherwise unchanged. Once the pointers select the right heads, the same staged loop computes $Q_iK_j^T$, applies the masks, and updates $m_i$, $l_i$, and $\widehat{O}_i$.
+
+This lets us use the smaller $K$ and $V$ tensors directly without physically repeating their heads to match `Hq`. Programs whose query heads belong to the same group address the same key-value data, although each program still issues its own tile loads; this mapping alone does not guarantee that a shared tile is fetched from HBM only once.
+
+The `flash_attention_forward_gqa` wrapper checks that `Hq % Hk == 0` and that $K$ and $V$ have matching head counts, sequence lengths, and head dimensions, with the head dimension also matching $Q$. It passes both `Hq` and `Hk` to the kernel. Despite its name, this kernel also handles MQA and the MHA special case described above.
+
+## Appendix: Projection and tensor shapes
 
 We will use the following notation:
 
@@ -701,4 +768,4 @@ $$
 | $K$ | $[B,H_q,L,d_h]$ | $[B,H_{kv},L,d_h]$ | $[B,1,L,d_h]$ |
 | $V$ | $[B,H_q,L,d_h]$ | $[B,H_{kv},L,d_h]$ | $[B,1,L,d_h]$ |
 
-The Triton implementation in this note supports only the MHA column, for which $H_q=H_{kv}$.
+The initial kernels implement the MHA column. The `flash_attention_forward_gqa_kernel` extension handles all three columns through the query-head-to-key-value-head mapping.
