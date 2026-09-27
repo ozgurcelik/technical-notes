@@ -1,9 +1,9 @@
 ---
 layout: post
-title: "FlashAttention-2 Backward Pass Mathematics"
+title: "Flash Attention 2 Backward Pass"
 date: 2026-09-27 00:00:00 +0200
-description: "Deriving attention gradients and implementing tiled FlashAttention-2 backward kernels in Triton, with GQA support and causal scheduling."
-excerpt: "Deriving attention gradients and implementing tiled FlashAttention-2 backward kernels in Triton, with GQA support and causal scheduling."
+description: "Deriving attention gradients, implementing tiled FlashAttention-2 backward kernels in Triton with GQA and causal attention, integrating PyTorch autograd, and benchmarking against PyTorch SDPA."
+excerpt: "Deriving attention gradients, implementing tiled FlashAttention-2 backward kernels in Triton with GQA and causal attention, integrating PyTorch autograd, and benchmarking against PyTorch SDPA."
 categories: [gpu-programming, triton, attention]
 permalink: /flash-attention-2-backward-pass-mathematics/
 ---
@@ -12,7 +12,7 @@ permalink: /flash-attention-2-backward-pass-mathematics/
 
 ## Scope and notation
 
-This note continues the [forward-pass derivation]({{ "/flash-attention-2-forward-pass-in-triton/" | relative_url }}). We derive the attention gradients first, then organize them into tiles so that the full score and probability matrices never need to be stored in GPU high-bandwidth memory (HBM).
+This note continues the [forward-pass derivation]({{ "/flash-attention-2-forward-pass-in-triton/" | relative_url }}). We derive the attention gradients first, then organize them into tiles so that the full score and probability matrices never need to be stored in GPU high-bandwidth memory (HBM). We then implement the backward pass in Triton, including GQA and causal attention, connect it to PyTorch autograd, and compare its performance with PyTorch SDPA backward.
 
 As in the forward note, $B$ is the batch size, $H$ is the number of heads, $L$ is the sequence length, and $d$ is the head dimension. We start with multi-head attention (MHA), omit the independent batch and head dimensions, and work with $Q,K,V\in\mathbb{R}^{L\times d}$.
 
