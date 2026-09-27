@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "Flash Attention 2 Backward Pass"
+title: "FlashAttention-2 Backward Pass"
 date: 2026-09-27 00:00:00 +0200
 description: "Deriving attention gradients, implementing tiled FlashAttention-2 backward kernels in Triton with GQA and causal attention, integrating PyTorch autograd, and benchmarking against PyTorch SDPA."
 excerpt: "Deriving attention gradients, implementing tiled FlashAttention-2 backward kernels in Triton with GQA and causal attention, integrating PyTorch autograd, and benchmarking against PyTorch SDPA."
